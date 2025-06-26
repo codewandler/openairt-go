@@ -14,8 +14,10 @@ type ConversationItemCreateEvent struct {
 type ConversationItem struct {
 	ID      string                    `json:"id"`
 	Type    string                    `json:"type"`
-	Role    string                    `json:"role"`
+	Role    string                    `json:"role,omitempty"`
 	Content []ConversationItemContent `json:"content,omitempty"`
+	CallID  string                    `json:"call_id,omitempty"`
+	Output  string                    `json:"output,omitempty"`
 }
 
 type ConversationItemContent struct {

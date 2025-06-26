@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/codewandler/openairt-go/events"
 	"github.com/codewandler/openairt-go/internal/websocket"
+	"github.com/codewandler/openairt-go/tool"
 	nanoid "github.com/matoous/go-nanoid/v2"
 	"github.com/smallnest/ringbuffer"
 	"io"
@@ -20,6 +21,7 @@ type Client struct {
 	ws          *websocket.Client
 	onEvent     func(e any)
 	onError     func(e *events.ErrorEvent)
+	onToolCall  func(name string, args map[string]any) (any, error)
 	logger      *slog.Logger
 	update      chan struct{}
 	audioInChan chan []byte
@@ -71,14 +73,16 @@ func (c *Client) OnError(h func(e *events.ErrorEvent)) {
 	c.onError = h
 }
 
-func (c *Client) Send(evt any) error {
+func (c *Client) OnToolCall(h func(name string, args map[string]any) (any, error)) {
+	c.onToolCall = h
+}
 
+// Send sends any kind of event to the websocket
+func (c *Client) Send(evt any) error {
 	data, err := json.Marshal(evt)
 	if err != nil {
 		return err
 	}
-
-	fmt.Printf("evt --> %+v\n", string(data))
 
 	c.ws.WriteText(data)
 
@@ -179,7 +183,7 @@ func (c *Client) Open(ctx context.Context) error {
 				return err
 			}
 
-			println("<-- evt:", x.Type, x.EventID)
+			//println("<-- evt:", x.Type, x.EventID)
 
 			switch x.Type {
 			case "error":
@@ -195,14 +199,22 @@ func (c *Client) Open(ctx context.Context) error {
 			case "session.created":
 				dispatchEvent[events.SessionCreatedEvent](c.onEvent, data)
 				go func() {
+
+					toolChoice := tool.ChoiceNone
+					if len(c.config.tools) > 0 {
+						toolChoice = tool.ChoiceAuto
+					}
+
 					initialized <- c.SessionUpdate(events.SessionUpdate{
-						Voice:             "alloy",
+						Voice:             c.config.voice,
 						InputAudioFormat:  events.AudioFormatPCM16,
 						OutputAudioFormat: events.AudioFormatPCM16,
-						Temperature:       0.6,
-						Speed:             1.4,
-						Instructions:      "Your name is Martha. Your main language is English. Your are helpful",
+						Temperature:       c.config.temperature,
+						Speed:             c.config.speed,
+						Instructions:      c.config.instruction,
 						Modalities:        []string{"text", "audio"},
+						ToolChoice:        toolChoice,
+						Tools:             c.config.tools,
 						TurnDetection: &events.TurnDetection{
 							CreateResponse:    true,
 							InterruptResponse: true,
@@ -213,6 +225,58 @@ func (c *Client) Open(ctx context.Context) error {
 			case "session.updated":
 				c.update <- struct{}{}
 				dispatchEvent[events.SessionUpdateEvent](c.onEvent, data)
+			case "response.done":
+				evt, err := events.Parse[events.ResponseDoneEvent](data)
+				if err != nil {
+					slog.Error("failed to parse response done event", slog.Any("err", err))
+				}
+
+				if c.onToolCall != nil {
+					for _, o := range evt.Response.Output {
+						if o.Type == "function_call" && o.Status == "completed" {
+							var args map[string]any
+							if err := json.Unmarshal([]byte(o.Arguments), &args); err != nil {
+								return err
+							}
+
+							res, err := c.onToolCall(o.Name, args)
+							c.logger.Debug("tool call", slog.Any("name", o.Name), slog.Any("args", args), slog.Any("res", res), slog.Any("err", err))
+							// TODO: add to conversation
+
+							var toolOutput = func() string {
+								if err != nil {
+									d, _ := json.Marshal(map[string]any{
+										"error": err.Error(),
+									})
+									return string(d)
+								} else if res != nil {
+									d, _ := json.Marshal(res)
+									return string(d)
+								} else {
+									d, _ := json.Marshal(map[string]any{
+										"success": true,
+									})
+									return string(d)
+								}
+							}()
+
+							_ = c.Send(events.ConversationItemCreateEvent{
+								BaseEvent: events.NewBaseEvent("conversation.item.create"),
+								Item: events.ConversationItem{
+									ID:     o.CallID,
+									Type:   "function_call_output",
+									CallID: o.CallID,
+									Output: toolOutput,
+								},
+							})
+							_ = c.CreateResponse()
+						}
+					}
+				}
+
+				// dispatch
+				dispatchEvent[events.ResponseDoneEvent](c.onEvent, data)
+
 			case "response.audio_transcript.done":
 				dispatchEvent[events.ResponseAudioTranscriptDoneEvent](c.onEvent, data)
 			case "response.audio_transcript.delta":

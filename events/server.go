@@ -1,6 +1,9 @@
 package events
 
-import "fmt"
+import (
+	"fmt"
+	"github.com/codewandler/openairt-go/tool"
+)
 
 type AudioFormat string
 
@@ -35,39 +38,24 @@ type SessionCreatedEvent struct {
 	Session Session `json:"session"`
 }
 
+// ResponseCreateEvent creates an out-of-band response
+// see: https://platform.openai.com/docs/guides/realtime-conversations#create-responses-outside-the-default-conversation
 type ResponseCreateEvent struct {
 	BaseEvent
 	Response ResponseCreatePayload `json:"response"`
 }
 
 type ResponseCreatePayload struct {
-	Modalities        []string    `json:"modalities,omitempty"`
-	Instructions      string      `json:"instructions,omitempty"`
-	Voice             string      `json:"voice,omitempty"`
-	OutputAudioFormat AudioFormat `json:"output_audio_format,omitempty"`
-	Tools             []Tool      `json:"tools,omitempty"`
-	ToolChoice        string      `json:"tool_choice,omitempty"`
-	Temperature       float64     `json:"temperature,omitempty"`
-	MaxOutputTokens   int         `json:"max_output_tokens,omitempty"`
-}
-
-type Tool struct {
-	Type        string     `json:"type"`
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
-	Parameters  Parameters `json:"parameters"`
-}
-
-type Parameters struct {
-	Type       string     `json:"type"`
-	Properties Properties `json:"properties"`
-	Required   []string   `json:"required"`
-}
-
-type Properties map[string]Schema
-
-type Schema struct {
-	Type string `json:"type"`
+	Modalities        []string       `json:"modalities,omitempty"`
+	Instructions      string         `json:"instructions,omitempty"`
+	Voice             string         `json:"voice,omitempty"`
+	Conversation      string         `json:"conversation,omitempty"`
+	MetaData          map[string]any `json:"metadata,omitempty"`
+	OutputAudioFormat AudioFormat    `json:"output_audio_format,omitempty"`
+	Tools             []tool.Tool    `json:"tools,omitempty"`
+	ToolChoice        tool.Choice    `json:"tool_choice,omitempty"`
+	Temperature       float64        `json:"temperature,omitempty"`
+	MaxOutputTokens   int            `json:"max_output_tokens,omitempty"`
 }
 
 type SpeechStartedEvent struct {
@@ -111,4 +99,28 @@ type ResponseAudioTranscriptDoneEvent struct {
 	InputIndex  int    `json:"input_index"`
 	ItemID      string `json:"item_id"`
 	Transcript  string `json:"transcript"`
+}
+
+type ResponseDoneEvent struct {
+	BaseEvent
+	ResponseId string               `json:"response_id"`
+	Response   ResponseDoneResponse `json:"response"`
+}
+
+type ResponseDoneResponse struct {
+	Object   string               `json:"object"`
+	ID       string               `json:"id"`
+	Status   string               `json:"status"`
+	Output   []ResponseDoneOutput `json:"output"`
+	MetaData map[string]any       `json:"metadata"`
+}
+
+type ResponseDoneOutput struct {
+	Object    string `json:"object"`
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Status    string `json:"status"`
+	Name      string `json:"name"`
+	CallID    string `json:"call_id"`
+	Arguments string `json:"arguments"`
 }

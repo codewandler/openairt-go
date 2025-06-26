@@ -1,5 +1,7 @@
 package events
 
+import "github.com/codewandler/openairt-go/tool"
+
 type Session struct {
 	ID                       string         `json:"id,omitempty"`
 	Object                   string         `json:"object,omitempty"`
@@ -35,8 +37,8 @@ type SessionUpdate struct {
 	MaxResponseOutputTokens string         `json:"max_response_output_tokens,omitempty"`
 	Speed                   float64        `json:"speed,omitempty"`
 	Tracing                 *string        `json:"tracing,omitempty"`
-	Tools                   *[]interface{} `json:"tools,omitempty"`
-	ToolChoice              string         `json:"tool_choice,omitempty"`
+	Tools                   []tool.Tool    `json:"tools,omitempty"`
+	ToolChoice              tool.Choice    `json:"tool_choice,omitempty"`
 }
 
 // TurnDetection holds the VAD configuration.
