@@ -12,59 +12,55 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"time"
 )
 
-const (
-	API_URL = "https://api.openairt.com"
-)
-
-type ClientConfig struct {
-	ApiKey string
-	Model  string
-}
-
 type Client struct {
-	config     *ClientConfig
-	ws         *websocket.Client
-	onEvent    func(e any)
-	onError    func(e *events.ErrorEvent)
-	logger     *slog.Logger
-	update     chan struct{}
-	audioIn    chan []byte
-	audioClear chan struct{}
-	audio      *ringbuffer.RingBuffer
+	config      *clientConfig
+	ws          *websocket.Client
+	onEvent     func(e any)
+	onError     func(e *events.ErrorEvent)
+	logger      *slog.Logger
+	update      chan struct{}
+	audioInChan chan []byte
+	audioClear  chan struct{}
+	audioOut    *ringbuffer.RingBuffer
+	audioIn     *ringbuffer.RingBuffer
 }
 
-func (c *Client) Read(data []byte) (int, error) {
-	return c.audio.Read(data)
-}
+// Audio returns a reader and writer for the audio stream.
+// The reader is used to read the audio stream from the server.
+// The writer is used to write the audio stream to the server.
+// The sample rate of the audio stream can be specified.
+// If the sample rate is not specified, the default sample rate is 24_000 Hz.
+// The sample rate of the audio stream must be 24_000 Hz.
+// If the sample rate is not 24_000 Hz, the audio stream will be resampled.
+// The resampling algorithm is linear.
+func (c *Client) Audio(outSampleRate, inputSampleRate int) (io.Reader, io.Writer) {
+	var (
+		r io.Reader = c.audioOut
+		w io.Writer = c.audioIn
+	)
 
-func (c *Client) Write(data []byte) (int, error) {
-	id, err := nanoid.New()
-	if err != nil {
-		return 0, err
+	if outSampleRate != 24_000 {
+		r = &ResampleReader{
+			Source:    c.audioOut,
+			Resampler: LinearResampler{},
+			FromRate:  24_000,
+			ToRate:    outSampleRate,
+		}
 	}
 
-	evtData, err := json.Marshal(map[string]any{
-		"event_id": id,
-		"type":     "input_audio_buffer.append",
-		"audio":    base64.StdEncoding.EncodeToString(data),
-	})
-	if err != nil {
-		return 0, err
+	if inputSampleRate != 24_000 {
+		w = &ResampleWriter{
+			Sink:      c.audioIn,
+			Resampler: LinearResampler{},
+			FromRate:  inputSampleRate,
+			ToRate:    24_000,
+		}
 	}
 
-	c.ws.WriteText(evtData)
-
-	return len(data), nil
-}
-
-var _ io.Writer = (*Client)(nil)
-
-func (c *Client) SetLogger(logger *slog.Logger) {
-	c.logger = logger
+	return r, w
 }
 
 func (c *Client) OnEvent(h func(e any)) {
@@ -164,14 +160,14 @@ func (c *Client) UserInput(text string, respond bool) (err error) {
 
 func (c *Client) Open(ctx context.Context) error {
 	headers := http.Header{}
-	headers.Add("Authorization", fmt.Sprintf("Bearer %s", c.config.ApiKey))
+	headers.Add("Authorization", fmt.Sprintf("Bearer %s", c.config.apiKey))
 	headers.Add("OpenAI-Beta", "realtime=v1")
 
 	initialized := make(chan error)
 
 	if ws, err := websocket.Connect(ctx, websocket.ClientConfig{
 		Logger:  slog.New(slog.DiscardHandler),
-		URL:     fmt.Sprintf("wss://api.openai.com/v1/realtime?model=%s", c.config.Model),
+		URL:     fmt.Sprintf("wss://api.openai.com/v1/realtime?model=%s", c.config.model),
 		Headers: headers,
 		OnText: func(data []byte) error {
 			var x struct {
@@ -183,7 +179,7 @@ func (c *Client) Open(ctx context.Context) error {
 				return err
 			}
 
-			//println("<-- evt:", x.Type, x.EventID)
+			println("<-- evt:", x.Type, x.EventID)
 
 			switch x.Type {
 			case "error":
@@ -235,7 +231,7 @@ func (c *Client) Open(ctx context.Context) error {
 				}
 
 				// write to buffer
-				c.audioIn <- data
+				c.audioInChan <- data
 
 			case "input_audio_buffer.speech_started":
 				/*id1, _ := nanoid.New()
@@ -267,11 +263,44 @@ func (c *Client) Open(ctx context.Context) error {
 	go func() {
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-c.audioClear:
-				c.audio.Reset()
-			case data := <-c.audioIn:
-				c.audio.Write(data)
+				c.audioOut.Reset()
+			case data := <-c.audioInChan:
+				_, err := c.audioOut.Write(data)
+				if err != nil {
+					c.logger.Error("failed to write to audio read buffer", slog.Any("err", err))
+				}
 			}
+		}
+	}()
+
+	go func() {
+		buf := make([]byte, 1024)
+
+		for {
+			n, err := c.audioIn.Read(buf)
+			if err != nil {
+				if err == io.EOF {
+					return
+				}
+				return
+			}
+			data := buf[:n]
+			id, _ := nanoid.New()
+
+			evtData, err := json.Marshal(map[string]any{
+				"event_id": id,
+				"type":     "input_audio_buffer.append",
+				"audio":    base64.StdEncoding.EncodeToString(data),
+			})
+			if err != nil {
+				c.logger.Error("failed to marshal input audio buffer append event", slog.Any("err", err))
+				return
+			}
+
+			c.ws.WriteText(evtData)
 		}
 	}()
 
@@ -279,22 +308,19 @@ func (c *Client) Open(ctx context.Context) error {
 
 }
 
-func New(config *ClientConfig) *Client {
+func New(opts ...ClientOption) *Client {
+	config := &clientConfig{}
+	withDefaults()(config)
+	WithOptions(opts...)(config)
 	return &Client{
-		config:     config,
-		logger:     slog.Default(),
-		update:     make(chan struct{}, 1),
-		audio:      ringbuffer.New(1024 * 1024 * 5).SetBlocking(true),
-		audioClear: make(chan struct{}, 1),
-		audioIn:    make(chan []byte, 100),
+		config:      config,
+		logger:      slog.Default(),
+		update:      make(chan struct{}, 1),
+		audioOut:    ringbuffer.New(1024 * 1024).SetBlocking(true),
+		audioIn:     ringbuffer.New(1024 * 1024 * 10).SetBlocking(true),
+		audioClear:  make(chan struct{}, 1),
+		audioInChan: make(chan []byte, 100),
 	}
-}
-
-func NewDefault() *Client {
-	return New(&ClientConfig{
-		ApiKey: os.Getenv("OPENAI_API_KEY"),
-		Model:  "gpt-4o-realtime-preview-2025-06-03",
-	})
 }
 
 type InterruptEvent struct {

@@ -12,42 +12,46 @@ import (
 )
 
 const (
-	bytesPerSample  = 2                      // 16-bit mono PCM
-	playLatency     = 200 * time.Millisecond // speaker buffer = 200 ms
-	captureFrames   = 1024                   // mic pull size
-	playChannelSize = 48_000                 // 1 s @ 48 kHz
+	bytesPerSample = 2                      // 16-bit mono PCM
+	playLatency    = 200 * time.Millisecond // speaker buffer = 200 ms
+	captureFrames  = 1024                   // mic pull size
 )
 
 // NewAudioIO returns an io.ReadWriter that speaks 16-bit MONO PCM.
 // ctx / framesPerBuffer are ignored for API compatibility.
 func NewAudioIO(
-	sampleRate float64,
+	playSampleRate int,
+	captureSampleRate int,
 ) (*AudioIO, error) {
-
-	sr := beep.SampleRate(int(sampleRate))
+	var (
+		playSR    = beep.SampleRate(playSampleRate)
+		captureSR = beep.SampleRate(captureSampleRate)
+	)
 
 	// --------------- playback side ------------------------------------------
-	if err := speaker.Init(sr, sr.N(playLatency)); err != nil {
+	if err := speaker.Init(playSR, playSR.N(playLatency)); err != nil {
 		return nil, err
 	}
 
 	// channel feeding the one global streamer
-	playCh := make(chan [2]float64, playChannelSize)
-	// kick the streamer exactly once
-	speaker.Play(newChanStreamer(playCh))
+	playCh := make(chan [2]float64, playSampleRate)
+	playStreamer := newChanStreamer(playCh)
+	speaker.Play(playStreamer)
 
 	// --------------- capture side -------------------------------------------
-	mic, _, err := microphone.OpenDefaultStream(sr, 1) // 1 = mono
+	mic, _, err := microphone.OpenDefaultStream(captureSR, 1) // 1 = mono
 	if err != nil {
 		return nil, err
 	}
-	mic.Start()
+	if err := mic.Start(); err != nil {
+		return nil, err
+	}
 
 	a := &AudioIO{
-		mic:        mic,
-		playCh:     playCh,
-		readBuf:    make([]byte, 0, 8192),
-		sampleRate: sr,
+		mic:          mic,
+		playCh:       playCh,
+		playStreamer: playStreamer,
+		readBuf:      make([]byte, 0, 160),
 	}
 
 	go a.captureLoop()
@@ -57,13 +61,11 @@ func NewAudioIO(
 // ---------------------------------------------------------------------------
 
 type AudioIO struct {
-	mic        *microphone.Streamer
-	sampleRate beep.SampleRate
-
-	playCh chan [2]float64 // writer side pushes here
-
-	readMu  sync.Mutex
-	readBuf []byte
+	mic          *microphone.Streamer
+	playStreamer *chanStreamer
+	playCh       chan [2]float64
+	readMu       sync.Mutex
+	readBuf      []byte
 }
 
 // --------------------------- io.Reader --------------------------------------
@@ -86,7 +88,7 @@ func (a *AudioIO) Read(p []byte) (int, error) {
 
 func (a *AudioIO) Write(b []byte) (int, error) {
 	if len(b)%bytesPerSample != 0 {
-		return 0, errors.New("audioio: Write expects 16-bit mono PCM")
+		return 0, errors.New("audio: Write expects 16-bit mono PCM")
 	}
 
 	for i := 0; i < len(b); i += bytesPerSample {
@@ -116,21 +118,9 @@ func (a *AudioIO) captureLoop() {
 	}
 }
 
-func (a *AudioIO) Clear() {
-	// 1.  Empty our own buffered channel.
-	for {
-		select {
-		case <-a.playCh: // discard one frame
-		default: // channel drained
-			goto drained
-		}
-	}
-drained:
-
-	// 2.  Flush Beep’s mixer (needs the global lock).
-	speaker.Lock()
-	speaker.Clear()
-	speaker.Unlock()
+// ClearOutputBuffer clears output buffer
+func (a *AudioIO) ClearOutputBuffer() {
+	a.playStreamer.Flush()
 }
 
 // ---------------------- conversion helpers ---------------------------------
@@ -170,10 +160,22 @@ func (c *chanStreamer) Stream(buf [][2]float64) (int, bool) {
 		select {
 		case smp := <-c.ch:
 			buf[i] = smp
-		default: // no sample available yet – play silence
+		default:
 			buf[i] = [2]float64{}
 		}
 	}
 	return len(buf), true
 }
+
+// Flush discards all pending audio samples in the channel.
+func (c *chanStreamer) Flush() {
+	for {
+		select {
+		case <-c.ch:
+		default:
+			return
+		}
+	}
+}
+
 func (c *chanStreamer) Err() error { return nil }

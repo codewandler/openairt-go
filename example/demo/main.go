@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"github.com/codewandler/openairt-go"
 	"github.com/codewandler/openairt-go/events"
@@ -20,18 +21,38 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	var (
+		phone       = false
+		srMic       = 24_000
+		srSpeaker   = 24_000
+		instruction = "You are a helpcenter agent and help the user."
+	)
+
+	flag.StringVar(&instruction, "instruction", instruction, "instruction to send to the agent.")
+	flag.IntVar(&srMic, "mic-sample-rate", srMic, "microphone sample rate")
+	flag.IntVar(&srSpeaker, "speaker-sample-rate", srMic, "speaker sample rate")
+	flag.BoolVar(&phone, "phone", false, "enabled 8khz audio emulation.")
+	flag.Parse()
+
+	if phone {
+		srMic = 8_000
+		srSpeaker = 8_000
+	}
+
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 
 	// audio
 	must(portaudio.Initialize())
 	defer portaudio.Terminate()
-	audioIO, err := NewAudioIO(24_000)
+
+	// emulate 8khz
+	audioIO, err := NewAudioIO(srSpeaker, srMic)
 	if err != nil {
 		panic(err)
 	}
 
 	// openAI client
-	client := openairt.NewDefault()
+	client := openairt.New(openairt.WithDefaultLogger())
 	client.OnError(func(e *events.ErrorEvent) {
 		slog.Error("error", slog.Any("error", e))
 	})
@@ -48,9 +69,9 @@ func main() {
 			slog.Info("session created", slog.Any("session", x.Session.ID))
 		case *events.SpeechStartedEvent:
 			println("-- start --")
+			go audioIO.ClearOutputBuffer()
 		default:
 			fmt.Printf("%+v\n", x)
-
 		}
 	})
 
@@ -59,12 +80,16 @@ func main() {
 		panic(err)
 	}
 
-	//must(client.UserInput("My name is timo. what is my name?", true))
+	cr, cw := client.Audio(srSpeaker, srMic)
+
+	//must(client.UserInput("Hi, my name is timo. Can you ", true))
+	must(client.CreateResponse())
 
 	go func() {
+
 		buf := make([]byte, 640)
 		for {
-			n, err := client.Read(buf)
+			n, err := cr.Read(buf)
 			if err != nil {
 				if err.Error() == "reset called" {
 					<-time.After(100 * time.Millisecond)
@@ -72,8 +97,6 @@ func main() {
 				}
 				panic(err)
 			}
-
-			//println(">", n)
 
 			_, err = audioIO.Write(buf[:n])
 			if err != nil {
@@ -84,14 +107,15 @@ func main() {
 
 	// send mic input -> openAI
 	go func() {
-		buf := make([]byte, 10*1024)
+
+		buf := make([]byte, 1024)
 		for {
 			n, err := audioIO.Read(buf)
 			if err != nil {
 				panic(err)
 			}
 
-			_, err = client.Write(buf[:n])
+			_, err = cw.Write(buf[:n])
 			if err != nil {
 				panic(err)
 			}
