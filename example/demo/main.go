@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/codewandler/audio-go"
 	"github.com/codewandler/openairt-go"
 	"github.com/codewandler/openairt-go/events"
 	"github.com/codewandler/openairt-go/tool"
@@ -28,7 +29,7 @@ func main() {
 		debug       = false
 		srMic       = 24_000
 		srSpeaker   = 24_000
-		instruction = "You are a helpcenter agent and help the user."
+		instruction = "You are a helpcenter agent and help the user. You speak english language."
 	)
 
 	flag.StringVar(&instruction, "instruction", instruction, "instruction to send to the agent.")
@@ -53,7 +54,11 @@ func main() {
 	defer portaudio.Terminate()
 
 	// emulate 8khz
-	audioIO, err := NewAudioIO(srSpeaker, srMic)
+	audioIO, err := audio.NewAudioIO(audio.Config{
+		PlaySampleRate:    srSpeaker,
+		CaptureSampleRate: srMic,
+		PlayLatency:       500 * time.Millisecond,
+	})
 	if err != nil {
 		panic(err)
 	}
