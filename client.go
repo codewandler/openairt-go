@@ -187,8 +187,6 @@ func (c *Client) Open(ctx context.Context) error {
 				return err
 			}
 
-			println("<-- evt:", x.Type, x.EventID)
-
 			switch x.Type {
 			case "error":
 				evt, err := events.Parse[events.ErrorEvent](data)
@@ -234,8 +232,6 @@ func (c *Client) Open(ctx context.Context) error {
 				if err != nil {
 					slog.Error("failed to parse response done event", slog.Any("err", err))
 				}
-
-				println(c.audioOut.Length())
 
 				if c.onToolCall != nil {
 					for _, o := range evt.Response.Output {

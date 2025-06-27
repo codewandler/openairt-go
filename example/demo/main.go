@@ -132,7 +132,6 @@ func main() {
 		case *events.ResponseDoneEvent:
 			//slog.Info("response done", slog.Any("response", x.Response))
 		case *events.SpeechStartedEvent:
-			//println("-- start --")
 			audioIO.ClearOutputBuffer()
 		}
 	})
