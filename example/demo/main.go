@@ -29,7 +29,7 @@ func main() {
 		debug       = false
 		srMic       = 24_000
 		srSpeaker   = 24_000
-		instruction = "You are a helpcenter agent and help the user. You speak english language."
+		instruction = "You are a help-center agent and help the user. You speak english language."
 	)
 
 	flag.StringVar(&instruction, "instruction", instruction, "instruction to send to the agent.")
@@ -70,12 +70,24 @@ func main() {
 		openairt.WithTools(
 			tool.Tool{
 				Type:        "function",
-				Description: "End the conversation",
+				Description: "Use to end the conversation for various reasons. User may have asked for it. You see a dead end or you think the case is closed. If you think you should end the conversation, ask the user if its okay, then before you end, say good bye and only after the user confirmed with good bye end it.",
 				Name:        "conversation_end",
 				Parameters: tool.Parameters{
-					Type:       "object",
-					Properties: make(tool.Properties),
-					Required:   []string{},
+					Type: "object",
+					Properties: tool.Properties{
+						"summary": {
+							Type:        "string",
+							Description: `Concise summary of the conversation`,
+						},
+						"reason": {
+							Type:        "string",
+							Description: "The reason for ending the conversation. If you don't specify a reason, the default reason is 'user'.",
+						},
+					},
+					Required: []string{
+						"summary",
+						"reason",
+					},
 				},
 			},
 			tool.Tool{
@@ -95,6 +107,8 @@ func main() {
 		case "get_time":
 			return time.Now().Format(time.RFC3339), nil
 		case "conversation_end":
+			fmt.Printf("agent> end conversation: %s", args["reason"])
+			fmt.Printf("summary>\n%s", args["summary"])
 			os.Exit(0)
 			return "OK", nil
 		}

@@ -1,9 +1,15 @@
 package openairt
 
 import (
+	"fmt"
 	"github.com/codewandler/openairt-go/tool"
 	"log/slog"
 	"os"
+)
+
+const (
+	ApiKeyEnvVarNameShort = "OPENAI_KEY"
+	ApiKeyEnvVarNameLong  = "OPENAI_API_KEY"
 )
 
 type clientConfig struct {
@@ -16,6 +22,13 @@ type clientConfig struct {
 	speed       float64
 	logger      *slog.Logger
 	tools       []tool.Tool
+}
+
+func (c *clientConfig) validate() error {
+	if c.apiKey == "" {
+		return fmt.Errorf("missing api key")
+	}
+	return nil
 }
 
 type ClientOption func(*clientConfig)
@@ -66,11 +79,13 @@ func WithKey(apiKey string) ClientOption {
 	}
 }
 
-func WithEnvKey(envName string) ClientOption {
+func WithEnvKey(vars ...string) ClientOption {
 	return func(o *clientConfig) {
-		o.apiKey = os.Getenv(envName)
-		if o.apiKey == "" {
-			panic("missing environment variable: " + envName)
+		for _, envVarName := range vars {
+			if k := os.Getenv(envVarName); k != "" {
+				o.apiKey = k
+				return
+			}
 		}
 	}
 }
@@ -92,7 +107,7 @@ func withDefaults() ClientOption {
 		WithTemperature(0.7),
 		WithSpeed(1.3),
 		WithModel("gpt-4o-realtime-preview-2025-06-03"),
-		WithEnvKey("OPENAI_API_KEY"),
+		WithEnvKey(ApiKeyEnvVarNameShort, ApiKeyEnvVarNameLong),
 	)
 }
 

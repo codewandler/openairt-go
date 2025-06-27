@@ -163,6 +163,10 @@ func (c *Client) UserInput(text string, respond bool) (err error) {
 }
 
 func (c *Client) Open(ctx context.Context) error {
+	if err := c.config.validate(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+
 	headers := http.Header{}
 	headers.Add("Authorization", fmt.Sprintf("Bearer %s", c.config.apiKey))
 	headers.Add("OpenAI-Beta", "realtime=v1")
@@ -183,7 +187,7 @@ func (c *Client) Open(ctx context.Context) error {
 				return err
 			}
 
-			//println("<-- evt:", x.Type, x.EventID)
+			println("<-- evt:", x.Type, x.EventID)
 
 			switch x.Type {
 			case "error":
@@ -230,6 +234,8 @@ func (c *Client) Open(ctx context.Context) error {
 				if err != nil {
 					slog.Error("failed to parse response done event", slog.Any("err", err))
 				}
+
+				println(c.audioOut.Length())
 
 				if c.onToolCall != nil {
 					for _, o := range evt.Response.Output {
