@@ -20,6 +20,7 @@ type clientConfig struct {
 	voice       string
 	temperature float64
 	speed       float64
+	sampleRate  int
 	logger      *slog.Logger
 	tools       []tool.Tool
 }
@@ -48,6 +49,12 @@ func WithVoice(voice string) ClientOption {
 func WithSpeed(speed float64) ClientOption {
 	return func(config *clientConfig) {
 		config.speed = speed
+	}
+}
+
+func WithSampleRate(sr int) ClientOption {
+	return func(config *clientConfig) {
+		config.sampleRate = sr
 	}
 }
 
@@ -105,6 +112,7 @@ func withDefaults() ClientOption {
 		WithVoice("coral"),
 		WithInstruction("You are a helpcenter agent and help the user."),
 		WithTemperature(0.7),
+		WithSampleRate(24_000),
 		WithSpeed(1.3),
 		WithModel("gpt-4o-realtime-preview-2025-06-03"),
 		WithEnvKey(ApiKeyEnvVarNameShort, ApiKeyEnvVarNameLong),

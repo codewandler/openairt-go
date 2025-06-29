@@ -16,53 +16,63 @@ import (
 	"time"
 )
 
-type Client struct {
-	config      *clientConfig
-	ws          *websocket.Client
-	onEvent     func(e any)
-	onError     func(e *events.ErrorEvent)
-	onToolCall  func(name string, args map[string]any) (any, error)
-	logger      *slog.Logger
-	update      chan struct{}
-	audioInChan chan []byte
-	audioClear  chan struct{}
-	audioOut    *ringbuffer.RingBuffer
-	audioIn     *ringbuffer.RingBuffer
+type AudioIO struct {
+	outRW           *ringbuffer.RingBuffer
+	toAgentWriter   io.Writer // toAgentWriter is where to write audio to the agent.
+	fromUserReader  io.Reader // fromUserReader is where to read audio from the user.
+	toUserWriter    io.Writer // toUserWriter is where to write audio to the user.
+	fromAgentReader io.Reader // fromAgentReader is where to read audio from the agent.
 }
 
-// Audio returns a reader and writer for the audio stream.
-// The reader is used to read the audio stream from the server.
-// The writer is used to write the audio stream to the server.
-// The sample rate of the audio stream can be specified.
-// If the sample rate is not specified, the default sample rate is 24_000 Hz.
-// The sample rate of the audio stream must be 24_000 Hz.
-// If the sample rate is not 24_000 Hz, the audio stream will be resampled.
-// The resampling algorithm is linear.
-func (c *Client) Audio(outSampleRate, inputSampleRate int) (io.Reader, io.Writer) {
-	var (
-		r io.Reader = c.audioOut
-		w io.Writer = c.audioIn
-	)
+func (io *AudioIO) ClearOutputBuffer() {
+	// TODO: locking
+	io.outRW.Reset()
+}
 
-	if outSampleRate != 24_000 {
-		r = &ResampleReader{
-			Source:    c.audioOut,
-			Resampler: LinearResampler{},
+func NewAudioIO(sourceSampleRate int) *AudioIO {
+	userBufferSize := getChunkSize(sourceSampleRate, 200*time.Millisecond, 2, 1) * 2
+	userBuffer := ringbuffer.New(userBufferSize).SetBlocking(true)
+
+	agentBufferSize := getChunkSize(24_000, 60*time.Second, 2, 1) * 2
+	agentBuffer := ringbuffer.New(agentBufferSize).SetBlocking(true)
+
+	println("input buffer size", userBufferSize)
+	println("output buffer size", agentBufferSize)
+
+	return &AudioIO{
+		// OUT
+		outRW: agentBuffer,
+		toUserWriter: &ResampleWriter{
+			Sink:      agentBuffer,
+			ToRate:    sourceSampleRate,
 			FromRate:  24_000,
-			ToRate:    outSampleRate,
-		}
-	}
-
-	if inputSampleRate != 24_000 {
-		w = &ResampleWriter{
-			Sink:      c.audioIn,
 			Resampler: LinearResampler{},
-			FromRate:  inputSampleRate,
+		},
+		fromAgentReader: newChunkReader(agentBuffer, sourceSampleRate),
+		// IN
+		toAgentWriter: &ResampleWriter{
+			Sink:      userBuffer,
 			ToRate:    24_000,
-		}
+			FromRate:  sourceSampleRate,
+			Resampler: LinearResampler{},
+		},
+		fromUserReader: newChunkReader(userBuffer, 24_000),
 	}
+}
 
-	return r, w
+type Client struct {
+	config     *clientConfig
+	ws         *websocket.Client
+	onEvent    func(e any)
+	onError    func(e *events.ErrorEvent)
+	onToolCall func(name string, args map[string]any) (any, error)
+	logger     *slog.Logger
+	update     chan struct{}
+	io         *AudioIO
+}
+
+func (c *Client) Audio() (io.Reader, io.Writer) {
+	return c.io.fromAgentReader, c.io.toAgentWriter
 }
 
 func (c *Client) OnEvent(h func(e any)) {
@@ -290,14 +300,18 @@ func (c *Client) Open(ctx context.Context) error {
 				evt, err := events.Parse[events.ResponseAudioDeltaEvent](data)
 				if err != nil {
 					slog.Error("failed to parse response audio delta event", slog.Any("err", err))
+				} else {
+					data, err := base64.StdEncoding.DecodeString(evt.Delta)
+					if err != nil {
+						slog.Error("failed to decode base64 data", slog.Any("err", err))
+					}
+					n, err := c.io.outRW.Write(data)
+					if err != nil {
+						c.logger.Error("failed to write to audio read buffer", slog.Any("err", err))
+					} else {
+						println("wrote from agent to out", n)
+					}
 				}
-				data, err := base64.StdEncoding.DecodeString(evt.Delta)
-				if err != nil {
-					slog.Error("failed to decode base64 data", slog.Any("err", err))
-				}
-
-				// write to buffer
-				c.audioInChan <- data
 
 			case "input_audio_buffer.speech_started":
 				/*id1, _ := nanoid.New()
@@ -311,7 +325,7 @@ func (c *Client) Open(ctx context.Context) error {
 					"type":     "input_audio_buffer.clear",
 				})*/
 
-				c.audioClear <- struct{}{}
+				c.io.ClearOutputBuffer()
 
 				dispatchEvent[events.SpeechStartedEvent](c.onEvent, data)
 			case "input_audio_buffer.speech_stopped":
@@ -327,32 +341,19 @@ func (c *Client) Open(ctx context.Context) error {
 	}
 
 	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-c.audioClear:
-				c.audioOut.Reset()
-			case data := <-c.audioInChan:
-				_, err := c.audioOut.Write(data)
-				if err != nil {
-					c.logger.Error("failed to write to audio read buffer", slog.Any("err", err))
-				}
-			}
-		}
-	}()
-
-	go func() {
-		buf := make([]byte, 1024)
+		// TODO: how much should we read for low latency?
+		buf := make([]byte, 1024*10)
 
 		for {
-			n, err := c.audioIn.Read(buf)
+			n, err := c.io.fromUserReader.Read(buf)
 			if err != nil {
 				if err == io.EOF {
 					return
 				}
+				c.logger.Error("failed to read from audio write buffer", slog.Any("err", err))
 				return
 			}
+
 			data := buf[:n]
 			id, _ := nanoid.New()
 
@@ -378,16 +379,18 @@ func New(opts ...ClientOption) *Client {
 	config := &clientConfig{}
 	withDefaults()(config)
 	WithOptions(opts...)(config)
+
 	return &Client{
-		config:      config,
-		logger:      slog.Default(),
-		update:      make(chan struct{}, 1),
-		audioOut:    ringbuffer.New(1024 * 1024).SetBlocking(true),
-		audioIn:     ringbuffer.New(1024 * 1024 * 10).SetBlocking(true),
-		audioClear:  make(chan struct{}, 1),
-		audioInChan: make(chan []byte, 100),
+		config: config,
+		logger: slog.Default(),
+		update: make(chan struct{}, 1),
+		io:     NewAudioIO(config.sampleRate),
 	}
 }
 
 type InterruptEvent struct {
+}
+
+func newChunkReader(r io.Reader, sampleRate int) io.Reader {
+	return NewFixedAudioChunkReader(r, sampleRate, 200*time.Millisecond, 2, 1)
 }
