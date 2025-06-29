@@ -17,46 +17,44 @@ import (
 )
 
 type AudioIO struct {
-	outRW           *ringbuffer.RingBuffer
-	toAgentWriter   io.Writer // toAgentWriter is where to write audio to the agent.
-	fromUserReader  io.Reader // fromUserReader is where to read audio from the user.
-	toUserWriter    io.Writer // toUserWriter is where to write audio to the user.
-	fromAgentReader io.Reader // fromAgentReader is where to read audio from the agent.
+	agentBuffer       *ringbuffer.RingBuffer
+	userInputWriter   io.Writer // userInputWriter is where to write audio to the agent.
+	userOutputReader  io.Reader // userOutputReader is where to read audio from the agent.
+	agentInputReader  io.Reader // agentInputReader is where to read audio from the user.
+	agentOutputWriter io.Writer // agentOutputWriter is where to write audio to the user.
 }
 
 func (io *AudioIO) ClearOutputBuffer() {
 	// TODO: locking
-	io.outRW.Reset()
+	io.agentBuffer.Reset()
 }
 
-func NewAudioIO(sourceSampleRate int) *AudioIO {
-	userBufferSize := getChunkSize(sourceSampleRate, 200*time.Millisecond, 2, 1) * 2
+func NewAudioIO(userSampleRate int, latency time.Duration) *AudioIO {
+
+	userBufferSize := getChunkSize(24_000, latency, 2, 1) * 2
 	userBuffer := ringbuffer.New(userBufferSize).SetBlocking(true)
 
 	agentBufferSize := getChunkSize(24_000, 60*time.Second, 2, 1) * 2
 	agentBuffer := ringbuffer.New(agentBufferSize).SetBlocking(true)
 
-	println("input buffer size", userBufferSize)
-	println("output buffer size", agentBufferSize)
-
 	return &AudioIO{
-		// OUT
-		outRW: agentBuffer,
-		toUserWriter: &ResampleWriter{
+		// agent
+		agentBuffer:      agentBuffer,
+		agentInputReader: newChunkReader(userBuffer, 24_000, latency),
+		agentOutputWriter: &ResampleWriter{
 			Sink:      agentBuffer,
-			ToRate:    sourceSampleRate,
 			FromRate:  24_000,
+			ToRate:    userSampleRate,
 			Resampler: LinearResampler{},
 		},
-		fromAgentReader: newChunkReader(agentBuffer, sourceSampleRate),
-		// IN
-		toAgentWriter: &ResampleWriter{
+		// user
+		userOutputReader: newChunkReader(agentBuffer, userSampleRate, latency),
+		userInputWriter: &ResampleWriter{
 			Sink:      userBuffer,
+			FromRate:  userSampleRate,
 			ToRate:    24_000,
-			FromRate:  sourceSampleRate,
 			Resampler: LinearResampler{},
 		},
-		fromUserReader: newChunkReader(userBuffer, 24_000),
 	}
 }
 
@@ -72,7 +70,7 @@ type Client struct {
 }
 
 func (c *Client) Audio() (io.Reader, io.Writer) {
-	return c.io.fromAgentReader, c.io.toAgentWriter
+	return c.io.userOutputReader, c.io.userInputWriter
 }
 
 func (c *Client) OnEvent(h func(e any)) {
@@ -305,11 +303,8 @@ func (c *Client) Open(ctx context.Context) error {
 					if err != nil {
 						slog.Error("failed to decode base64 data", slog.Any("err", err))
 					}
-					n, err := c.io.outRW.Write(data)
-					if err != nil {
+					if _, err = c.io.agentBuffer.Write(data); err != nil {
 						c.logger.Error("failed to write to audio read buffer", slog.Any("err", err))
-					} else {
-						println("wrote from agent to out", n)
 					}
 				}
 
@@ -341,16 +336,16 @@ func (c *Client) Open(ctx context.Context) error {
 	}
 
 	go func() {
-		// TODO: how much should we read for low latency?
-		buf := make([]byte, 1024*10)
+		cs := getChunkSize(24_000, c.config.latency(), 2, 1)
+		buf := make([]byte, cs)
 
 		for {
-			n, err := c.io.fromUserReader.Read(buf)
+			n, err := c.io.agentInputReader.Read(buf)
 			if err != nil {
 				if err == io.EOF {
 					return
 				}
-				c.logger.Error("failed to read from audio write buffer", slog.Any("err", err))
+				c.logger.Error("failed to read from agent audio buffer", slog.Any("err", err))
 				return
 			}
 
@@ -384,13 +379,13 @@ func New(opts ...ClientOption) *Client {
 		config: config,
 		logger: slog.Default(),
 		update: make(chan struct{}, 1),
-		io:     NewAudioIO(config.sampleRate),
+		io:     NewAudioIO(config.sampleRate, time.Duration(config.latencyMS)*time.Millisecond),
 	}
 }
 
 type InterruptEvent struct {
 }
 
-func newChunkReader(r io.Reader, sampleRate int) io.Reader {
-	return NewFixedAudioChunkReader(r, sampleRate, 200*time.Millisecond, 2, 1)
+func newChunkReader(r io.Reader, sampleRate int, latency time.Duration) io.Reader {
+	return NewFixedAudioChunkReader(r, sampleRate, latency, 2, 1)
 }

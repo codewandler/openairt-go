@@ -27,21 +27,20 @@ func main() {
 	var (
 		phone       = false
 		debug       = false
-		srMic       = 24_000
-		srSpeaker   = 24_000
+		sr          = 24_000
+		latencyMs   = 20
 		instruction = "You are a help-center agent and help the user. You speak english language."
 	)
 
 	flag.StringVar(&instruction, "instruction", instruction, "instruction to send to the agent.")
-	flag.IntVar(&srMic, "mic-sample-rate", srMic, "microphone sample rate")
-	flag.IntVar(&srSpeaker, "speaker-sample-rate", srMic, "speaker sample rate")
+	flag.IntVar(&sr, "sample-rate", sr, "sample rate")
+	flag.IntVar(&latencyMs, "latency", latencyMs, "latency in milliseconds.")
 	flag.BoolVar(&phone, "phone", false, "enabled 8khz audio emulation.")
 	flag.BoolVar(&debug, "debug", false, "enable debug logs")
 	flag.Parse()
 
 	if phone {
-		srMic = 8_000
-		srSpeaker = 8_000
+		sr = 24_000
 	}
 
 	slog.SetLogLoggerLevel(slog.LevelError)
@@ -54,10 +53,10 @@ func main() {
 	defer portaudio.Terminate()
 
 	// emulate 8khz
-	audioIO, err := audio.NewAudioIO(audio.Config{
-		PlaySampleRate:    srSpeaker,
-		CaptureSampleRate: srMic,
-		PlayLatency:       500 * time.Millisecond,
+	audioDevice, err := audio.NewAudioIO(audio.Config{
+		PlaySampleRate:    sr,
+		CaptureSampleRate: sr,
+		PlayLatency:       time.Duration(latencyMs) * time.Millisecond,
 	})
 	if err != nil {
 		panic(err)
@@ -67,6 +66,7 @@ func main() {
 	client := openairt.New(
 		openairt.WithDefaultLogger(),
 		openairt.WithInstruction(instruction),
+		openairt.WithLatency(latencyMs),
 		openairt.WithTools(
 			tool.Tool{
 				Type:        "function",
@@ -121,6 +121,7 @@ func main() {
 	client.OnEvent(func(e any) {
 		switch x := e.(type) {
 		case *events.ResponseAudioTranscriptDeltaEvent:
+			print(".")
 		case *events.ResponseAudioTranscriptDoneEvent:
 			println("agent>", x.Transcript)
 		case *events.ResponseAudioDone:
@@ -132,7 +133,8 @@ func main() {
 		case *events.ResponseDoneEvent:
 			//slog.Info("response done", slog.Any("response", x.Response))
 		case *events.SpeechStartedEvent:
-			audioIO.ClearOutputBuffer()
+			println("agent> reset buffer")
+			audioDevice.ClearOutputBuffer()
 		}
 	})
 
@@ -141,14 +143,18 @@ func main() {
 		panic(err)
 	}
 
-	cr, cw := client.Audio(srSpeaker, srMic)
+	cr, cw := client.Audio()
 
 	//must(client.UserInput("Hi, my name is timo. Can you ", true))
 	must(client.CreateResponse())
 
-	go func() {
+	latency := time.Duration(latencyMs) * time.Millisecond
+	bufferSize := int(float64(sr) * 2.0 * latency.Seconds())
 
-		buf := make([]byte, 640)
+	go func() {
+		// TODO:
+
+		buf := make([]byte, bufferSize)
 		for {
 			n, err := cr.Read(buf)
 			if err != nil {
@@ -159,7 +165,7 @@ func main() {
 				panic(err)
 			}
 
-			_, err = audioIO.Write(buf[:n])
+			_, err = audioDevice.Write(buf[:n])
 			if err != nil {
 				panic(err)
 			}
@@ -169,9 +175,9 @@ func main() {
 	// send mic input -> openAI
 	go func() {
 
-		buf := make([]byte, 1024)
+		buf := make([]byte, bufferSize)
 		for {
-			n, err := audioIO.Read(buf)
+			n, err := audioDevice.Read(buf)
 			if err != nil {
 				panic(err)
 			}
