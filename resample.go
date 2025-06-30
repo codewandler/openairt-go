@@ -1,101 +1,62 @@
 package openairt
 
 import (
+	"bytes"
 	"encoding/binary"
-	"errors"
-	"io"
-	"math"
+	"github.com/faiface/beep"
 )
 
-type Resampler interface {
-	Resample(input []int16, fromRate, toRate int) []int16
+type PCMStreamer struct {
+	data []int16
+	pos  int
 }
 
-// LinearResampler uses linear interpolation to resample audio
-type LinearResampler struct{}
-
-func (r LinearResampler) Resample(input []int16, fromRate, toRate int) []int16 {
-	if fromRate == toRate {
-		return input
+func NewPCMStreamer(b []byte) *PCMStreamer {
+	samples := make([]int16, len(b)/2)
+	for i := 0; i < len(samples); i++ {
+		samples[i] = int16(binary.LittleEndian.Uint16(b[i*2:]))
 	}
+	return &PCMStreamer{data: samples}
+}
 
-	ratio := float64(toRate) / float64(fromRate)
-	outputLen := int(float64(len(input)) * ratio)
-	output := make([]int16, outputLen)
-
-	for i := 0; i < outputLen; i++ {
-		srcPos := float64(i) / ratio
-		i0 := int(math.Floor(srcPos))
-		i1 := i0 + 1
-		if i1 >= len(input) {
-			i1 = len(input) - 1
+func (s *PCMStreamer) Stream(samples [][2]float64) (n int, ok bool) {
+	for i := range samples {
+		if s.pos >= len(s.data) {
+			return i, false
 		}
-
-		frac := srcPos - float64(i0)
-		output[i] = int16((1-frac)*float64(input[i0]) + frac*float64(input[i1]))
+		val := float64(s.data[s.pos]) / 32768.0
+		samples[i][0] = val
+		samples[i][1] = val // duplicate mono to stereo
+		s.pos++
 	}
-	return output
+	return len(samples), true
 }
 
-// ResampleReader reads from an underlying reader, resamples audio, and returns PCM16 bytes
-type ResampleReader struct {
-	Source    io.Reader
-	FromRate  int
-	ToRate    int
-	Resampler Resampler
-}
+func (s *PCMStreamer) Err() error { return nil }
 
-func (r *ResampleReader) Read(p []byte) (int, error) {
-	temp := make([]byte, len(p))
-	n, err := r.Source.Read(temp)
-	if err != nil && err != io.EOF {
-		return 0, err
+func ResamplePCM(pcmData []byte, fromRate, toRate int) ([]byte, error) {
+	streamer := NewPCMStreamer(pcmData)
+
+	resampler := beep.Resample(3, beep.SampleRate(fromRate), beep.SampleRate(toRate), streamer)
+
+	// Buffer to collect the output
+	buf := new(bytes.Buffer)
+	sample := make([][2]float64, 1024)
+
+	for {
+		n, ok := resampler.Stream(sample)
+		for i := 0; i < n; i++ {
+			mono := (sample[i][0] + sample[i][1]) / 2.0
+			int16Val := int16(mono * 32767)
+			err := binary.Write(buf, binary.LittleEndian, int16Val)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if !ok {
+			break
+		}
 	}
 
-	sampleCount := n / 2
-	samples := make([]int16, sampleCount)
-	for i := 0; i < sampleCount; i++ {
-		samples[i] = int16(binary.LittleEndian.Uint16(temp[i*2:]))
-	}
-
-	resampled := r.Resampler.Resample(samples, r.FromRate, r.ToRate)
-	byteLen := len(resampled) * 2
-	if byteLen > len(p) {
-		resampled = resampled[:len(p)/2]
-		byteLen = len(resampled) * 2
-	}
-
-	for i, s := range resampled {
-		binary.LittleEndian.PutUint16(p[i*2:], uint16(s))
-	}
-
-	return byteLen, nil
-}
-
-// ResampleWriter takes PCM16 data, resamples it, and writes to an underlying writer
-type ResampleWriter struct {
-	Sink      io.Writer
-	FromRate  int
-	ToRate    int
-	Resampler Resampler
-}
-
-func (w *ResampleWriter) Write(p []byte) (int, error) {
-	if len(p)%2 != 0 {
-		return 0, errors.New("unaligned PCM16 byte stream")
-	}
-
-	sampleCount := len(p) / 2
-	samples := make([]int16, sampleCount)
-	for i := 0; i < sampleCount; i++ {
-		samples[i] = int16(binary.LittleEndian.Uint16(p[i*2:]))
-	}
-
-	resampled := w.Resampler.Resample(samples, w.FromRate, w.ToRate)
-	outBuf := make([]byte, len(resampled)*2)
-	for i, s := range resampled {
-		binary.LittleEndian.PutUint16(outBuf[i*2:], uint16(s))
-	}
-
-	return w.Sink.Write(outBuf)
+	return buf.Bytes(), nil
 }

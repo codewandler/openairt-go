@@ -16,48 +16,6 @@ import (
 	"time"
 )
 
-type AudioIO struct {
-	agentBuffer       *ringbuffer.RingBuffer
-	userInputWriter   io.Writer // userInputWriter is where to write audio to the agent.
-	userOutputReader  io.Reader // userOutputReader is where to read audio from the agent.
-	agentInputReader  io.Reader // agentInputReader is where to read audio from the user.
-	agentOutputWriter io.Writer // agentOutputWriter is where to write audio to the user.
-}
-
-func (io *AudioIO) ClearOutputBuffer() {
-	// TODO: locking
-	io.agentBuffer.Reset()
-}
-
-func NewAudioIO(userSampleRate int, latency time.Duration) *AudioIO {
-
-	userBufferSize := getChunkSize(24_000, latency, 2, 1) * 2
-	userBuffer := ringbuffer.New(userBufferSize).SetBlocking(true)
-
-	agentBufferSize := getChunkSize(24_000, 60*time.Second, 2, 1) * 2
-	agentBuffer := ringbuffer.New(agentBufferSize).SetBlocking(true)
-
-	return &AudioIO{
-		// agent
-		agentBuffer:      agentBuffer,
-		agentInputReader: newChunkReader(userBuffer, 24_000, latency),
-		agentOutputWriter: &ResampleWriter{
-			Sink:      agentBuffer,
-			FromRate:  24_000,
-			ToRate:    userSampleRate,
-			Resampler: LinearResampler{},
-		},
-		// user
-		userOutputReader: newChunkReader(agentBuffer, userSampleRate, latency),
-		userInputWriter: &ResampleWriter{
-			Sink:      userBuffer,
-			FromRate:  userSampleRate,
-			ToRate:    24_000,
-			Resampler: LinearResampler{},
-		},
-	}
-}
-
 type Client struct {
 	config     *clientConfig
 	ws         *websocket.Client
@@ -66,11 +24,21 @@ type Client struct {
 	onToolCall func(name string, args map[string]any) (any, error)
 	logger     *slog.Logger
 	update     chan struct{}
-	io         *AudioIO
+	audioUser  *ringbuffer.RingBuffer
+	audioAgent *ringbuffer.RingBuffer
 }
 
-func (c *Client) Audio() (io.Reader, io.Writer) {
-	return c.io.userOutputReader, c.io.userInputWriter
+type readWriter struct {
+	io.Reader
+	io.Writer
+}
+
+// Audio returns user audio
+func (c *Client) Audio() io.ReadWriter {
+	return &readWriter{
+		Reader: c.audioAgent,
+		Writer: c.audioUser,
+	}
 }
 
 func (c *Client) OnEvent(h func(e any)) {
@@ -303,7 +271,7 @@ func (c *Client) Open(ctx context.Context) error {
 					if err != nil {
 						slog.Error("failed to decode base64 data", slog.Any("err", err))
 					}
-					if _, err = c.io.agentBuffer.Write(data); err != nil {
+					if _, err = c.audioAgent.Write(data); err != nil {
 						c.logger.Error("failed to write to audio read buffer", slog.Any("err", err))
 					}
 				}
@@ -320,7 +288,7 @@ func (c *Client) Open(ctx context.Context) error {
 					"type":     "input_audio_buffer.clear",
 				})*/
 
-				c.io.ClearOutputBuffer()
+				c.audioAgent.Reset()
 
 				dispatchEvent[events.SpeechStartedEvent](c.onEvent, data)
 			case "input_audio_buffer.speech_stopped":
@@ -336,15 +304,19 @@ func (c *Client) Open(ctx context.Context) error {
 	}
 
 	go func() {
-		cs := getChunkSize(24_000, c.config.latency(), 2, 1)
+		cs := int(24000.0 * 2.0 * c.config.latency().Seconds())
 		buf := make([]byte, cs)
 
 		for {
-			n, err := c.io.agentInputReader.Read(buf)
+			n, err := c.audioUser.Read(buf)
 			if err != nil {
 				if err == io.EOF {
 					return
 				}
+				if err.Error() == "reset called" {
+					continue
+				}
+
 				c.logger.Error("failed to read from agent audio buffer", slog.Any("err", err))
 				return
 			}
@@ -375,17 +347,17 @@ func New(opts ...ClientOption) *Client {
 	withDefaults()(config)
 	WithOptions(opts...)(config)
 
+	audioUser := ringbuffer.New(1024 * 1024).SetBlocking(true)
+	audioAgent := ringbuffer.New(1024 * 1024).SetBlocking(true)
+
 	return &Client{
-		config: config,
-		logger: slog.Default(),
-		update: make(chan struct{}, 1),
-		io:     NewAudioIO(config.sampleRate, time.Duration(config.latencyMS)*time.Millisecond),
+		config:     config,
+		logger:     slog.Default(),
+		update:     make(chan struct{}, 1),
+		audioUser:  audioUser,
+		audioAgent: audioAgent,
 	}
 }
 
 type InterruptEvent struct {
-}
-
-func newChunkReader(r io.Reader, sampleRate int, latency time.Duration) io.Reader {
-	return NewFixedAudioChunkReader(r, sampleRate, latency, 2, 1)
 }

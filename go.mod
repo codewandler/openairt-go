@@ -3,6 +3,7 @@ module github.com/codewandler/openairt-go
 go 1.24.3
 
 require (
+	github.com/faiface/beep v1.1.0
 	github.com/gobwas/ws v1.4.0
 	github.com/matoous/go-nanoid/v2 v2.1.0
 	github.com/smallnest/ringbuffer v0.0.0-20250317021400-0da97b586904

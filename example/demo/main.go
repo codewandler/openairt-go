@@ -40,7 +40,7 @@ func main() {
 	flag.Parse()
 
 	if phone {
-		sr = 24_000
+		sr = 8_000
 	}
 
 	slog.SetLogLoggerLevel(slog.LevelError)
@@ -143,20 +143,19 @@ func main() {
 		panic(err)
 	}
 
-	cr, cw := client.Audio()
+	audioUser := client.Audio()
 
 	//must(client.UserInput("Hi, my name is timo. Can you ", true))
 	must(client.CreateResponse())
 
-	latency := time.Duration(latencyMs) * time.Millisecond
-	bufferSize := int(float64(sr) * 2.0 * latency.Seconds())
+	//latency := time.Duration(latencyMs) * time.Millisecond
 
+	// stream audio from openAI to device
 	go func() {
-		// TODO:
-
+		bufferSize := 6400
 		buf := make([]byte, bufferSize)
 		for {
-			n, err := cr.Read(buf)
+			n, err := audioUser.Read(buf)
 			if err != nil {
 				if err.Error() == "reset called" {
 					<-time.After(100 * time.Millisecond)
@@ -165,7 +164,13 @@ func main() {
 				panic(err)
 			}
 
-			_, err = audioDevice.Write(buf[:n])
+			data := buf[:n]
+			resampled, err := openairt.ResamplePCM(data, 24_000, sr)
+			if err != nil {
+				panic(err)
+			}
+
+			_, err = audioDevice.Write(resampled)
 			if err != nil {
 				panic(err)
 			}
@@ -174,7 +179,7 @@ func main() {
 
 	// send mic input -> openAI
 	go func() {
-
+		bufferSize := 320
 		buf := make([]byte, bufferSize)
 		for {
 			n, err := audioDevice.Read(buf)
@@ -182,7 +187,13 @@ func main() {
 				panic(err)
 			}
 
-			_, err = cw.Write(buf[:n])
+			data := buf[:n]
+			resampled, err := openairt.ResamplePCM(data, sr, 24_000)
+			if err != nil {
+				panic(err)
+			}
+
+			_, err = audioUser.Write(resampled)
 			if err != nil {
 				panic(err)
 			}
