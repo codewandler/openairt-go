@@ -117,10 +117,10 @@ func withDefaults() ClientOption {
 		WithLanguage("en"),
 		WithVoice("coral"),
 		WithInstruction("You are a helpcenter agent and help the user."),
-		WithTemperature(0.7),
+		WithTemperature(0.8),
 		WithSampleRate(24_000),
 		WithLatency(200),
-		WithSpeed(1.3),
+		WithSpeed(1.1),
 		WithModel("gpt-4o-realtime-preview-2025-06-03"),
 		WithEnvKey(ApiKeyEnvVarNameShort, ApiKeyEnvVarNameLong),
 	)

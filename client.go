@@ -17,15 +17,15 @@ import (
 )
 
 type Client struct {
-	config     *clientConfig
-	ws         *websocket.Client
-	onEvent    func(e any)
-	onError    func(e *events.ErrorEvent)
-	onToolCall func(name string, args map[string]any) (any, error)
-	logger     *slog.Logger
-	update     chan struct{}
-	audioUser  *ringbuffer.RingBuffer
-	audioAgent *ringbuffer.RingBuffer
+	config       *clientConfig
+	ws           *websocket.Client
+	onEvent      func(e any)
+	onError      func(e *events.ErrorEvent)
+	onToolCall   func(name string, args map[string]any) (any, error)
+	logger       *slog.Logger
+	update       chan struct{}
+	audioToAgent *ringbuffer.RingBuffer
+	audioToUser  *ringbuffer.RingBuffer
 }
 
 type readWriter struct {
@@ -36,8 +36,8 @@ type readWriter struct {
 // Audio returns user audio
 func (c *Client) Audio() io.ReadWriter {
 	return &readWriter{
-		Reader: c.audioAgent,
-		Writer: c.audioUser,
+		Reader: c.audioToUser,
+		Writer: c.audioToAgent,
 	}
 }
 
@@ -197,6 +197,9 @@ func (c *Client) Open(ctx context.Context) error {
 							CreateResponse:    true,
 							InterruptResponse: true,
 							Type:              "server_vad",
+							SilenceDurationMs: 500,
+							PrefixPaddingMs:   100,
+							Threshold:         0.9,
 						},
 					})
 				}()
@@ -271,7 +274,7 @@ func (c *Client) Open(ctx context.Context) error {
 					if err != nil {
 						slog.Error("failed to decode base64 data", slog.Any("err", err))
 					}
-					if _, err = c.audioAgent.Write(data); err != nil {
+					if _, err = c.audioToUser.Write(data); err != nil {
 						c.logger.Error("failed to write to audio read buffer", slog.Any("err", err))
 					}
 				}
@@ -288,7 +291,7 @@ func (c *Client) Open(ctx context.Context) error {
 					"type":     "input_audio_buffer.clear",
 				})*/
 
-				c.audioAgent.Reset()
+				c.audioToUser.Reset()
 
 				dispatchEvent[events.SpeechStartedEvent](c.onEvent, data)
 			case "input_audio_buffer.speech_stopped":
@@ -304,11 +307,11 @@ func (c *Client) Open(ctx context.Context) error {
 	}
 
 	go func() {
-		cs := int(24000.0 * 2.0 * c.config.latency().Seconds())
+		cs := int(24000.0 * 2.0 * c.config.latency().Seconds() * 1.5)
 		buf := make([]byte, cs)
 
 		for {
-			n, err := c.audioUser.Read(buf)
+			n, err := c.audioToAgent.Read(buf)
 			if err != nil {
 				if err == io.EOF {
 					return
@@ -347,15 +350,15 @@ func New(opts ...ClientOption) *Client {
 	withDefaults()(config)
 	WithOptions(opts...)(config)
 
-	audioUser := ringbuffer.New(1024 * 1024).SetBlocking(true)
-	audioAgent := ringbuffer.New(1024 * 1024).SetBlocking(true)
+	audioToAgent := ringbuffer.New(1024 * 1024).SetBlocking(true)
+	audioToUser := ringbuffer.New(1024 * 1024).SetBlocking(true)
 
 	return &Client{
-		config:     config,
-		logger:     slog.Default(),
-		update:     make(chan struct{}, 1),
-		audioUser:  audioUser,
-		audioAgent: audioAgent,
+		config:       config,
+		logger:       slog.Default(),
+		update:       make(chan struct{}, 1),
+		audioToAgent: audioToAgent,
+		audioToUser:  audioToUser,
 	}
 }
 

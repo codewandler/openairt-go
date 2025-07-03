@@ -28,7 +28,7 @@ func main() {
 		phone       = false
 		debug       = false
 		sr          = 24_000
-		latencyMs   = 20
+		latencyMs   = 100
 		instruction = "You are a help-center agent and help the user. You speak english language."
 	)
 
@@ -57,6 +57,7 @@ func main() {
 		PlaySampleRate:    sr,
 		CaptureSampleRate: sr,
 		PlayLatency:       time.Duration(latencyMs) * time.Millisecond,
+		CaptureLatency:    time.Duration(latencyMs) * time.Millisecond,
 	})
 	if err != nil {
 		panic(err)
@@ -134,7 +135,7 @@ func main() {
 			//slog.Info("response done", slog.Any("response", x.Response))
 		case *events.SpeechStartedEvent:
 			println("agent> reset buffer")
-			audioDevice.ClearOutputBuffer()
+			//audioDevice.ClearOutputBuffer()
 		}
 	})
 
@@ -170,7 +171,7 @@ func main() {
 				panic(err)
 			}
 
-			_, err = audioDevice.Write(resampled)
+			n, err = audioDevice.Write(resampled)
 			if err != nil {
 				panic(err)
 			}
