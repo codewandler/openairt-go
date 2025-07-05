@@ -197,9 +197,9 @@ func (c *Client) Open(ctx context.Context) error {
 							CreateResponse:    true,
 							InterruptResponse: true,
 							Type:              "server_vad",
-							SilenceDurationMs: 500,
-							PrefixPaddingMs:   100,
-							Threshold:         0.9,
+							//SilenceDurationMs: 500,
+							//PrefixPaddingMs:   100,
+							//Threshold:         0.9,
 						},
 					})
 				}()
@@ -280,6 +280,7 @@ func (c *Client) Open(ctx context.Context) error {
 				}
 
 			case "input_audio_buffer.speech_started":
+				println("-- STARTED --")
 				/*id1, _ := nanoid.New()
 				c.Send(map[string]any{
 					"event_id": id1,
@@ -307,8 +308,7 @@ func (c *Client) Open(ctx context.Context) error {
 	}
 
 	go func() {
-		cs := int(24000.0 * 2.0 * c.config.latency().Seconds() * 1.5)
-		buf := make([]byte, cs)
+		buf := make([]byte, 960)
 
 		for {
 			n, err := c.audioToAgent.Read(buf)
@@ -350,8 +350,8 @@ func New(opts ...ClientOption) *Client {
 	withDefaults()(config)
 	WithOptions(opts...)(config)
 
-	audioToAgent := ringbuffer.New(1024 * 1024).SetBlocking(true)
-	audioToUser := ringbuffer.New(1024 * 1024).SetBlocking(true)
+	audioToAgent := ringbuffer.New(24_000 * 2 * 1).SetBlocking(true)
+	audioToUser := ringbuffer.New(24_000 * 2 * 60).SetBlocking(true)
 
 	return &Client{
 		config:       config,

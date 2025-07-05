@@ -37,7 +37,7 @@ func (s *PCMStreamer) Err() error { return nil }
 func ResamplePCM(pcmData []byte, fromRate, toRate int) ([]byte, error) {
 	streamer := NewPCMStreamer(pcmData)
 
-	resampler := beep.Resample(3, beep.SampleRate(fromRate), beep.SampleRate(toRate), streamer)
+	resampler := beep.Resample(4, beep.SampleRate(fromRate), beep.SampleRate(toRate), streamer)
 
 	// Buffer to collect the output
 	buf := new(bytes.Buffer)

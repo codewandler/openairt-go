@@ -5,7 +5,6 @@ import (
 	"github.com/codewandler/openairt-go/tool"
 	"log/slog"
 	"os"
-	"time"
 )
 
 const (
@@ -22,13 +21,8 @@ type clientConfig struct {
 	temperature float64
 	speed       float64
 	sampleRate  int
-	latencyMS   int
 	logger      *slog.Logger
 	tools       []tool.Tool
-}
-
-func (c *clientConfig) latency() time.Duration {
-	return time.Duration(c.latencyMS) * time.Millisecond
 }
 
 func (c *clientConfig) validate() error {
@@ -119,7 +113,6 @@ func withDefaults() ClientOption {
 		WithInstruction("You are a helpcenter agent and help the user."),
 		WithTemperature(0.8),
 		WithSampleRate(24_000),
-		WithLatency(200),
 		WithSpeed(1.1),
 		WithModel("gpt-4o-realtime-preview-2025-06-03"),
 		WithEnvKey(ApiKeyEnvVarNameShort, ApiKeyEnvVarNameLong),
@@ -135,12 +128,5 @@ func WithLanguage(language string) ClientOption {
 func WithInstruction(instruction string) ClientOption {
 	return func(o *clientConfig) {
 		o.instruction = instruction
-	}
-}
-
-// WithLatency sets the latency in milliseconds.
-func WithLatency(latencyMS int) ClientOption {
-	return func(o *clientConfig) {
-		o.latencyMS = latencyMS
 	}
 }

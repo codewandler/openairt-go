@@ -9,6 +9,7 @@ import (
 	"github.com/codewandler/openairt-go/events"
 	"github.com/codewandler/openairt-go/tool"
 	"github.com/gordonklaus/portaudio"
+	"log"
 	"log/slog"
 	"os"
 	"time"
@@ -28,13 +29,11 @@ func main() {
 		phone       = false
 		debug       = false
 		sr          = 24_000
-		latencyMs   = 100
 		instruction = "You are a help-center agent and help the user. You speak english language."
 	)
 
 	flag.StringVar(&instruction, "instruction", instruction, "instruction to send to the agent.")
 	flag.IntVar(&sr, "sample-rate", sr, "sample rate")
-	flag.IntVar(&latencyMs, "latency", latencyMs, "latency in milliseconds.")
 	flag.BoolVar(&phone, "phone", false, "enabled 8khz audio emulation.")
 	flag.BoolVar(&debug, "debug", false, "enable debug logs")
 	flag.Parse()
@@ -53,21 +52,15 @@ func main() {
 	defer portaudio.Terminate()
 
 	// emulate 8khz
-	audioDevice, err := audio.NewAudioIO(audio.Config{
-		PlaySampleRate:    sr,
-		CaptureSampleRate: sr,
-		PlayLatency:       time.Duration(latencyMs) * time.Millisecond,
-		CaptureLatency:    time.Duration(latencyMs) * time.Millisecond,
-	})
+	audioDevice, err := audio.NewDevice(sr, 1)
 	if err != nil {
-		panic(err)
+		log.Panicf("failed to create audio device: %s", err)
 	}
 
 	// openAI client
 	client := openairt.New(
 		openairt.WithDefaultLogger(),
 		openairt.WithInstruction(instruction),
-		openairt.WithLatency(latencyMs),
 		openairt.WithTools(
 			tool.Tool{
 				Type:        "function",
@@ -153,13 +146,14 @@ func main() {
 
 	// stream audio from openAI to device
 	go func() {
-		bufferSize := 6400
+		bufferSize := 3200
 		buf := make([]byte, bufferSize)
 		for {
 			n, err := audioUser.Read(buf)
 			if err != nil {
 				if err.Error() == "reset called" {
 					<-time.After(100 * time.Millisecond)
+					println("-- reset --")
 					continue
 				}
 				panic(err)
@@ -180,7 +174,7 @@ func main() {
 
 	// send mic input -> openAI
 	go func() {
-		bufferSize := 320
+		bufferSize := 3200
 		buf := make([]byte, bufferSize)
 		for {
 			n, err := audioDevice.Read(buf)
